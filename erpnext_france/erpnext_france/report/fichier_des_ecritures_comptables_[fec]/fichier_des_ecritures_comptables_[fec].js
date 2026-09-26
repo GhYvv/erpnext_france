@@ -87,16 +87,18 @@ let fec_export = function (query_report, mark_exported) {
         // Art. A47 A-1 LPF: SIREN + "FEC" + closing date (the SIREN is the SIRET's first 9 digits)
         const siren = String(company_data).replace(/\s/g, "").substring(0, 9);
         const title = siren + "FEC" + moment(fy).format("YYYYMMDD");
-        // Remove unwanted columns in CSV Export
+        // The file holds the 18 regulatory fields only (art. A47 A-1 LPF);
+        // the other columns stay in the report on screen.
         const column_row = query_report.columns
-          .filter((col) => !["ExportDate", "GlName"].includes(col.fieldname))
-          .map((col) => col.fieldname);
-        const column_data = query_report.get_data_for_csv(false);
+          .map((col) => col.fieldname)
+          .slice(0, FEC_FIELD_COUNT);
+        let column_data = query_report.get_data_for_csv(false);
 
         let gl_entries = [];
         column_data.forEach((data) => {
           gl_entries.push([data.pop(), data.pop()]);
         });
+        column_data = column_data.map((data) => data.slice(0, FEC_FIELD_COUNT));
 
         const result = [column_row].concat(column_data);
         downloadify(result, null, title);
@@ -119,14 +121,14 @@ let downloadify = function (data, roles, title) {
     return;
   }
 
-  const filename = title + ".csv";
-  let csv_data = to_tab_csv(data);
+  const filename = title + ".txt";
+  let csv_data = to_latin9(to_tab_csv(data));
   const a = document.createElement("a");
 
   if ("download" in a) {
     // Used Blob object, because it can handle large files
     let blob_object = new Blob([csv_data], {
-      type: "text/csv;charset=UTF-8",
+      type: "text/plain;charset=ISO-8859-15",
     });
     a.href = URL.createObjectURL(blob_object);
     a.download = filename;
@@ -141,6 +143,38 @@ let downloadify = function (data, roles, title) {
   a.click();
 
   document.body.removeChild(a);
+};
+
+const FEC_FIELD_COUNT = 18;
+
+// ISO-8859-15 differs from Latin-1 on 8 code points, the euro sign among them.
+const LATIN9 = {
+  "€": 0xa4,
+  Š: 0xa6,
+  š: 0xa8,
+  Ž: 0xb4,
+  ž: 0xb8,
+  Œ: 0xbc,
+  œ: 0xbd,
+  Ÿ: 0xbe,
+};
+const LATIN1_ONLY = [0xa4, 0xa6, 0xa8, 0xb4, 0xb8, 0xbc, 0xbd, 0xbe];
+
+// The FEC is encoded in ISO-8859-15: a character it cannot hold becomes "?".
+let to_latin9 = function (text) {
+  const bytes = new Uint8Array(text.length);
+  let length = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    if (LATIN9[char] !== undefined) {
+      bytes[length++] = LATIN9[char];
+    } else if (code < 0x100 && !LATIN1_ONLY.includes(code)) {
+      bytes[length++] = code;
+    } else {
+      bytes[length++] = 0x3f;
+    }
+  }
+  return bytes.slice(0, length);
 };
 
 // Flat file with tab-separated fields (the norm allows tab or "|"): a field
