@@ -5,7 +5,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import format_datetime
+from frappe.utils import flt, format_datetime
 from frappe.utils.data import get_datetime_in_timezone
 from pypika import Order
 
@@ -287,7 +287,7 @@ def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
 	):
 		journals.setdefault(j.journal_code, j)
 		journals[j.name] = j
-	party_data = [x for x in data if x.get("against_voucher")]
+	lettering_cache = {}
 
 	for d in data:
 		journal = journals.get(d.get("accounting_journal"))
@@ -408,8 +408,7 @@ def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
 
 		Idevise = d.get("account_currency")
 
-		DateLet = get_date_let(d, party_data) if d.get("against_voucher") else None
-		EcritureLet = d.get("against_voucher", "") if DateLet else ""
+		EcritureLet, DateLet = get_lettering(d, to_date, lettering_cache)
 
 		Montantdevise = None
 		if Idevise != company_currency:
@@ -455,29 +454,34 @@ def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
 	return result
 
 
-def get_date_let(d, data):
-	let_dates = [
-		x.get("GlPostDate")
-		for x in data
-		if (
-			x.get("against_voucher") == d.get("against_voucher")
-			and x.get("against_voucher_type") == d.get("against_voucher_type")
-			and x.get("party") == d.get("party")
-		)
-	]
+def get_lettering(d, to_date, cache):
+	"""(EcritureLet, DateLet) of an entry.
 
-	if not let_dates or len(let_dates) == 1:
-		let_vouchers = frappe.get_all(
-			"GL Entry",
-			filters={
-				"against_voucher": d.get("against_voucher"),
-				"against_voucher_type": d.get("against_voucher_type"),
-				"party": d.get("party"),
-			},
-			fields=["posting_date"],
-		)
-
-		if len(let_vouchers) > 1:
-			return format_datetime(max([x.get("posting_date") for x in let_vouchers]), "yyyyMMdd")
-
-	return format_datetime(max(let_dates), "yyyyMMdd") if len(let_dates) > 1 else None
+	Entries are lettered only when their group (account, party, invoice they
+	settle) balances at the end of the export: a partly paid invoice is not
+	lettered. DateLet is the date of the group's latest entry.
+	"""
+	if not d.get("against_voucher") or not d.get("party"):
+		return "", ""
+	key = (d.get("account"), d.get("party"), d.get("against_voucher_type"), d.get("against_voucher"))
+	if key not in cache:
+		gle = frappe.qb.DocType("GL Entry")
+		balance, count, last_date = (
+			frappe.qb.from_(gle)
+			.select(
+				frappe.query_builder.functions.Sum(gle.debit - gle.credit),
+				frappe.query_builder.functions.Count(gle.name),
+				frappe.query_builder.functions.Max(gle.posting_date),
+			)
+			.where(
+				(gle.account == key[0])
+				& (gle.party == key[1])
+				& (gle.against_voucher_type == key[2])
+				& (gle.against_voucher == key[3])
+				& (gle.is_cancelled == 0)
+				& (gle.posting_date <= to_date)
+			)
+		).run()[0]
+		settled = count and count > 1 and abs(flt(balance)) < 0.005
+		cache[key] = (key[3], format_datetime(last_date, "yyyyMMdd")) if settled else ("", "")
+	return cache[key]

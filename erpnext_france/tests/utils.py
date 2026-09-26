@@ -178,3 +178,26 @@ def submitted_purchase_invoice(company, amount=100):
 	pi.insert(ignore_permissions=True)
 	pi.submit()
 	return pi
+
+
+def pay(pi, amount):
+	"""Pay a submitted Purchase Invoice, fully or partly, from the company's cash account."""
+	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+	company = pi.company
+	if not frappe.db.get_value("Company", company, "default_cash_account"):
+		cash = frappe.db.get_value(
+			"Account", {"company": company, "account_type": "Cash", "is_group": 0}, "name"
+		) or frappe.db.get_value(
+			"Account", {"company": company, "account_type": "Bank", "is_group": 0}, "name"
+		)
+		frappe.db.set_value("Company", company, "default_cash_account", cash)
+	pe = get_payment_entry("Purchase Invoice", pi.name, party_amount=amount)
+	pe.paid_amount = pe.received_amount = amount
+	pe.references[0].allocated_amount = amount
+	pe.set_amounts()
+	pe.reference_no = frappe.generate_hash(length=8)
+	pe.reference_date = pi.posting_date
+	pe.insert(ignore_permissions=True)
+	pe.submit()
+	return pe

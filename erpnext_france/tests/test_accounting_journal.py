@@ -3,7 +3,7 @@ import unittest
 import frappe
 from frappe.utils import getdate
 
-from erpnext_france.tests.utils import french_company, other_company, submitted_purchase_invoice
+from erpnext_france.tests.utils import french_company, other_company, pay, submitted_purchase_invoice
 
 
 class TestAccountingJournal(unittest.TestCase):
@@ -131,3 +131,37 @@ class TestFecColumns(unittest.TestCase):
 		labels = set(frappe.get_all("Account", filters={"name": ("in", accounts)}, pluck="account_name"))
 		for row in rows:
 			self.assertIn(row[5], labels)
+
+
+class TestFecLettering(unittest.TestCase):
+	"""EcritureLet/DateLet: entries are lettered only when their group balances."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.company = french_company()
+
+	def supplier_rows(self, pi):
+		payable = frappe.db.get_value("Purchase Invoice", pi.name, "credit_to")
+		number = frappe.db.get_value("Account", payable, "account_number")
+		rows = TestAccountingJournal.fec_rows(self, pi.name)
+		return [row for row in rows if row[4].startswith(number)]
+
+	def test_unpaid_invoice_is_not_lettered(self):
+		pi = submitted_purchase_invoice(self.company)
+		for row in self.supplier_rows(pi):
+			self.assertEqual((row[13], row[14]), ("", ""))
+
+	def test_partly_paid_invoice_is_not_lettered(self):
+		pi = submitted_purchase_invoice(self.company, amount=100)
+		pay(pi, 40)
+		for row in self.supplier_rows(pi):
+			self.assertEqual((row[13], row[14]), ("", ""))
+
+	def test_fully_paid_invoice_is_lettered(self):
+		pi = submitted_purchase_invoice(self.company, amount=100)
+		pay(pi, 100)
+		rows = self.supplier_rows(pi)
+		self.assertTrue(rows)
+		for row in rows:
+			self.assertEqual(row[13], pi.name)
+			self.assertTrue(row[14])
