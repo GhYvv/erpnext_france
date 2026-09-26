@@ -54,3 +54,109 @@ def _enable_all_roles_for_admin():
 
 	if all_roles.difference(admin_roles):
 		add_all_roles_to("Administrator")
+
+
+# Fixtures for tests that post real accounting entries. They build their own
+# French company instead of relying on ERPNext's global test records.
+
+TEST_COMPANY = "ERPNext France Test SAS"
+CHART = "France - Plan Comptable General 2025 avec code"
+
+
+def french_company():
+	company = frappe.db.get_value("Company", {"country": "France"}, "name")
+	if not company:
+		company = (
+			frappe.get_doc(
+				{
+					"doctype": "Company",
+					"company_name": TEST_COMPANY,
+					"abbr": "EFT",
+					"country": "France",
+					"default_currency": "EUR",
+					"create_chart_of_accounts_based_on": "Standard Template",
+					"chart_of_accounts": CHART,
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
+	_ensure_fiscal_year(company)
+	if not frappe.db.get_value("Company", company, "round_off_account"):
+		frappe.db.set_value("Company", company, "round_off_account", _leaf(company, "Expense"))
+	frappe.db.commit()
+	return company
+
+
+def _leaf(company, root_type):
+	return frappe.db.get_value("Account", {"company": company, "root_type": root_type, "is_group": 0}, "name")
+
+
+def _ensure_fiscal_year(company):
+	year = now_datetime().year
+	start, end = f"{year}-01-01", f"{year}-12-31"
+	name = frappe.db.get_value("Fiscal Year", {"year_start_date": start, "year_end_date": end}, "name")
+	if not name:
+		frappe.get_doc(
+			{"doctype": "Fiscal Year", "year": str(year), "year_start_date": start, "year_end_date": end}
+		).insert(ignore_permissions=True)
+		return
+	fy = frappe.get_doc("Fiscal Year", name)
+	if fy.companies and company not in [row.company for row in fy.companies]:
+		fy.append("companies", {"company": company})
+		fy.save(ignore_permissions=True)
+
+
+def test_supplier(name="_Test France Supplier"):
+	if not frappe.db.exists("Supplier", name):
+		doc = frappe.get_doc(
+			{
+				"doctype": "Supplier",
+				"supplier_name": name,
+				"supplier_group": frappe.db.get_value("Supplier Group", {"is_group": 0}, "name"),
+			}
+		)
+		if not frappe.db.a_row_exists("Categorie Comptable Tiers"):
+			frappe.get_doc({"doctype": "Categorie Comptable Tiers", "nom": "_Test"}).insert(
+				ignore_permissions=True
+			)
+		doc.categorie_comptable_tiers = frappe.db.get_value("Categorie Comptable Tiers", {}, "name")
+		doc.insert(ignore_permissions=True)
+	return name
+
+
+def test_service_item(company, code="_Test France Service"):
+	if frappe.db.exists("Item", code):
+		doc = frappe.get_doc("Item", code)
+	else:
+		doc = frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": code,
+				"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+				"stock_uom": "Nos",
+				"is_stock_item": 0,
+			}
+		)
+	row = next((d for d in doc.item_defaults if d.company == company), None) or doc.append(
+		"item_defaults", {"company": company}
+	)
+	if not row.expense_account:
+		row.expense_account = _leaf(company, "Expense")
+	doc.save(ignore_permissions=True)
+	return code
+
+
+def submitted_purchase_invoice(company, amount=100):
+	pi = frappe.get_doc(
+		{
+			"doctype": "Purchase Invoice",
+			"company": company,
+			"supplier": test_supplier(),
+			"bill_no": frappe.generate_hash(length=10),
+			"items": [{"item_code": test_service_item(company), "qty": 1, "rate": amount}],
+		}
+	)
+	pi.insert(ignore_permissions=True)
+	pi.submit()
+	return pi

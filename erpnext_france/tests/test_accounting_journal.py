@@ -1,0 +1,72 @@
+import unittest
+
+import frappe
+from frappe.utils import getdate
+
+from erpnext_france.tests.utils import french_company, submitted_purchase_invoice
+
+
+class TestAccountingJournal(unittest.TestCase):
+	@classmethod
+	def setUpClass(cls):
+		cls.company = french_company()
+
+	def test_gl_entries_link_to_an_existing_journal(self):
+		"""Since journals are named `{journal_code}-{company}`, GL entries must store the name."""
+		pi = submitted_purchase_invoice(self.company)
+		journals = frappe.get_all(
+			"GL Entry", filters={"voucher_no": pi.name, "is_cancelled": 0}, pluck="accounting_journal"
+		)
+		self.assertTrue(journals)
+		for journal in journals:
+			self.assertTrue(frappe.db.exists("Accounting Journal", journal), journal)
+
+	def fec_rows(self, voucher_no):
+		from importlib import import_module
+
+		fec = import_module(
+			"erpnext_france.erpnext_france.report.fichier_des_ecritures_comptables_[fec]."
+			"fichier_des_ecritures_comptables_[fec]"
+		)
+		fiscal_year = frappe.db.get_value(
+			"Fiscal Year",
+			{"year_start_date": ("<=", getdate()), "year_end_date": (">=", getdate())},
+			["name", "year_start_date", "year_end_date"],
+			as_dict=True,
+		)
+		return [
+			row
+			for row in fec.get_result(
+				self.company, fiscal_year.name, fiscal_year.year_start_date, fiscal_year.year_end_date, 0
+			)
+			if row[8] == voucher_no
+		]
+
+	def purchase_journal(self):
+		return frappe.db.get_value(
+			"Accounting Journal",
+			{"company": self.company, "type": "Purchase"},
+			["journal_code", "journal_name"],
+			as_dict=True,
+		)
+
+	def assert_fec_journal(self, voucher_no):
+		journal = self.purchase_journal()
+		rows = self.fec_rows(voucher_no)
+		self.assertTrue(rows)
+		for row in rows:
+			self.assertEqual(row[0], journal.journal_code)
+			self.assertEqual(row[1], journal.journal_name)
+
+	def test_fec_shows_journal_code_and_label(self):
+		self.assert_fec_journal(submitted_purchase_invoice(self.company).name)
+
+	def test_fec_reads_entries_that_hold_the_bare_code(self):
+		"""Entries posted since 6357514 may hold the bare journal code, an orphan link
+		that an immutable ledger cannot correct: the FEC must still read them."""
+		pi = submitted_purchase_invoice(self.company)
+		frappe.db.sql(
+			"update `tabGL Entry` set accounting_journal = %s where voucher_no = %s",
+			(self.purchase_journal().journal_code, pi.name),
+		)
+		self.assert_fec_journal(pi.name)

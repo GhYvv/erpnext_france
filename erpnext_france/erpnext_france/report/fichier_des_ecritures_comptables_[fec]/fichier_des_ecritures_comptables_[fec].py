@@ -277,16 +277,25 @@ def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
 		filters={"Company": company},
 		fields=["name", "account_number", "account_name"],
 	)
-	journals = {
-		j.journal_code: j.journal_name
-		for j in frappe.get_all(
-			"Accounting Journal", filters={"company": company}, fields=["journal_code", "journal_name"]
-		)
-	}
+	# GL entries link to the journal by name (`{journal_code}-{company}`);
+	# entries posted before that naming hold the code, which was the name.
+	journals = {}
+	for j in frappe.get_all(
+		"Accounting Journal",
+		filters={"company": company},
+		fields=["name", "journal_code", "journal_name"],
+	):
+		journals.setdefault(j.journal_code, j)
+		journals[j.name] = j
 	party_data = [x for x in data if x.get("against_voucher")]
 
 	for d in data:
-		JournalCode = d.get("accounting_journal") or re.split("-|/|[0-9]", d.get("voucher_no"))[0]
+		journal = journals.get(d.get("accounting_journal"))
+		if journal:
+			JournalCode, JournalLib = journal.journal_code, journal.journal_name
+		else:
+			JournalCode = d.get("accounting_journal") or re.split("-|/|[0-9]", d.get("voucher_no"))[0]
+			JournalLib = None
 		EcritureNum = d.get("accounting_entry_number")
 		GlName = d.get("GlName")
 
@@ -418,7 +427,7 @@ def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
 
 		row = [
 			JournalCode,
-			journals.get(JournalCode),
+			JournalLib,
 			EcritureNum,
 			EcritureDate,
 			CompteNum,

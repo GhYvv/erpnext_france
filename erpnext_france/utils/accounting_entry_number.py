@@ -49,7 +49,6 @@ def get_accounting_journal(entry):
 		filters={"company": entry.company, "disabled": 0},
 		fields=[
 			"name",
-			"journal_code",
 			"type",
 			"account",
 			"`tabAccounting Journal Rule`.document_type",
@@ -75,13 +74,11 @@ def get_accounting_journal(entry):
 			None,
 			{"doc": frappe.get_doc(entry.voucher_type, entry.voucher_no).as_dict()},
 		):
-			accounting_journal = condition.journal_code
+			accounting_journal = condition.name
 			break
 
 	if not accounting_journal and [rule for rule in applicable_rules if not rule.condition]:
-		accounting_journal = next(
-			iter([rule for rule in applicable_rules if not rule.condition])
-		).journal_code
+		accounting_journal = next(iter([rule for rule in applicable_rules if not rule.condition])).name
 
 	if not accounting_journal:
 		accounting_journal = frappe.db.get_value(
