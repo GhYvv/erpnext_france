@@ -6,6 +6,7 @@ from typing import Any, NewType
 import frappe
 from erpnext.setup.utils import set_defaults_for_tests
 from frappe.core.doctype.report.report import get_report_module_dotted_path
+from frappe.utils import getdate
 from frappe.utils.data import now_datetime
 
 
@@ -110,8 +111,8 @@ def _leaf(company, root_type):
 	return frappe.db.get_value("Account", {"company": company, "root_type": root_type, "is_group": 0}, "name")
 
 
-def _ensure_fiscal_year(company):
-	year = now_datetime().year
+def _ensure_fiscal_year(company, year=None):
+	year = year or now_datetime().year
 	start, end = f"{year}-01-01", f"{year}-12-31"
 	name = frappe.db.get_value("Fiscal Year", {"year_start_date": start, "year_end_date": end}, "name")
 	if not name:
@@ -165,16 +166,20 @@ def test_service_item(company, code="_Test France Service"):
 	return code
 
 
-def submitted_purchase_invoice(company, amount=100):
+def submitted_purchase_invoice(company, amount=100, posting_date=None, supplier=None):
 	pi = frappe.get_doc(
 		{
 			"doctype": "Purchase Invoice",
 			"company": company,
-			"supplier": test_supplier(),
+			"supplier": supplier or test_supplier(),
 			"bill_no": frappe.generate_hash(length=10),
 			"items": [{"item_code": test_service_item(company), "qty": 1, "rate": amount}],
 		}
 	)
+	if posting_date:
+		_ensure_fiscal_year(company, getdate(posting_date).year)
+		pi.set_posting_time = 1
+		pi.posting_date = pi.bill_date = pi.due_date = posting_date
 	pi.insert(ignore_permissions=True)
 	pi.submit()
 	return pi

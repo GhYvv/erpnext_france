@@ -3,7 +3,13 @@ import unittest
 import frappe
 from frappe.utils import getdate
 
-from erpnext_france.tests.utils import french_company, other_company, pay, submitted_purchase_invoice
+from erpnext_france.tests.utils import (
+	french_company,
+	other_company,
+	pay,
+	submitted_purchase_invoice,
+	test_supplier,
+)
 
 
 class TestAccountingJournal(unittest.TestCase):
@@ -39,7 +45,7 @@ class TestAccountingJournal(unittest.TestCase):
 			for row in fec.get_result(
 				self.company, fiscal_year.name, fiscal_year.year_start_date, fiscal_year.year_end_date, 0
 			)
-			if row[8] == voucher_no
+			if voucher_no is None or row[8] == voucher_no
 		]
 
 	def purchase_journal(self):
@@ -165,3 +171,35 @@ class TestFecLettering(unittest.TestCase):
 		for row in rows:
 			self.assertEqual(row[13], pi.name)
 			self.assertTrue(row[14])
+
+
+class TestFecOpeningEntries(unittest.TestCase):
+	"""The FEC of a fiscal year opens with the balances carried forward (journal AN)."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.company = french_company()
+		year = getdate().year
+		cls.supplier = test_supplier(f"_Test AN Supplier {frappe.generate_hash(length=6)}")
+		cls.pi = submitted_purchase_invoice(
+			cls.company, amount=100, posting_date=f"{year - 1}-06-15", supplier=cls.supplier
+		)
+		cls.rows = [row for row in TestAccountingJournal.fec_rows(cls, None) if row[0] == "AN"]
+
+	def test_opening_entries_carry_the_unpaid_supplier_balance(self):
+		supplier_rows = [row for row in self.rows if row[6] == self.supplier]
+		self.assertEqual(len(supplier_rows), 1)
+		row = supplier_rows[0]
+		self.assertEqual(row[3], f"{getdate().year}0101")
+		self.assertEqual((row[11], row[12]), ("0,00", "100,00"))
+		self.assertEqual(row[10], "A nouveau")
+
+	def test_opening_journal_balances(self):
+		def amount(value):
+			return round(float(value.replace(",", ".")), 2)
+
+		self.assertTrue(self.rows)
+		self.assertEqual(
+			round(sum(amount(row[11]) for row in self.rows), 2),
+			round(sum(amount(row[12]) for row in self.rows), 2),
+		)

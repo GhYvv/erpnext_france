@@ -5,7 +5,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import flt, format_datetime
+from frappe.utils import flt, format_datetime, getdate
 from frappe.utils.data import get_datetime_in_timezone
 from pypika import Order
 
@@ -265,8 +265,13 @@ def get_gl_entries(company, fiscal_year, from_date, to_date, hide_already_export
 	return query.run(as_dict=True)
 
 
+OPENING_JOURNAL = ("AN", "A nouveaux")
+
+
 def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
-	data = get_gl_entries(company, fiscal_year, from_date, to_date, hide_already_exported)
+	data = get_opening_entries(company, fiscal_year, from_date) + list(
+		get_gl_entries(company, fiscal_year, from_date, to_date, hide_already_exported)
+	)
 
 	result = []
 
@@ -291,7 +296,9 @@ def get_result(company, fiscal_year, from_date, to_date, hide_already_exported):
 
 	for d in data:
 		journal = journals.get(d.get("accounting_journal"))
-		if journal:
+		if d.get("is_carried_forward"):
+			JournalCode, JournalLib = OPENING_JOURNAL
+		elif journal:
 			JournalCode, JournalLib = journal.journal_code, journal.journal_name
 		else:
 			JournalCode = d.get("accounting_journal") or re.split("-|/|[0-9]", d.get("voucher_no"))[0]
@@ -485,3 +492,103 @@ def get_lettering(d, to_date, cache):
 		settled = count and count > 1 and abs(flt(balance)) < 0.005
 		cache[key] = (key[3], format_datetime(last_date, "yyyyMMdd")) if settled else ("", "")
 	return cache[key]
+
+
+def get_opening_entries(company, fiscal_year, from_date):
+	"""The balances carried forward (journal AN), when the export starts the fiscal year.
+
+	ERPNext closes the income statement (Period Closing Voucher) but posts no
+	opening entries: the FEC of a fiscal year must still open with the
+	balance-sheet balances brought forward, per account and per party. If the
+	previous year was not closed, its unallocated result is carried to the
+	result account (120 profit, 129 loss) so that the journal balances.
+	"""
+	year_start = frappe.db.get_value("Fiscal Year", fiscal_year, "year_start_date")
+	if not year_start or (from_date and getdate(from_date) > getdate(year_start)):
+		return []
+
+	gle = frappe.qb.DocType("GL Entry")
+	account = frappe.qb.DocType("Account")
+	Sum = frappe.query_builder.functions.Sum
+	balances = (
+		frappe.qb.from_(gle)
+		.join(account)
+		.on(gle.account == account.name)
+		.select(
+			gle.account,
+			gle.party_type,
+			gle.party,
+			gle.account_currency,
+			Sum(gle.debit - gle.credit).as_("balance"),
+			Sum(gle.debit_in_account_currency - gle.credit_in_account_currency).as_("balance_currency"),
+		)
+		.where(
+			(gle.company == company)
+			& (gle.is_cancelled == 0)
+			& (gle.posting_date < year_start)
+			& (account.root_type.isin(["Asset", "Liability", "Equity"]))
+		)
+		.groupby(gle.account, gle.party_type, gle.party, gle.account_currency)
+	).run(as_dict=True)
+
+	lines = [b for b in balances if abs(flt(b.balance)) >= 0.005]
+	result = -flt(sum(flt(b.balance) for b in lines), 2)
+	if abs(result) >= 0.005:
+		lines.append(
+			frappe._dict(
+				account=_result_account(company, loss=result > 0),
+				account_currency=frappe.get_cached_value("Company", company, "default_currency"),
+				balance=result,
+				balance_currency=result,
+			)
+		)
+
+	entry_number = f"{OPENING_JOURNAL[0]}{getdate(year_start).year}"
+	return [_carried_forward_entry(line, year_start, entry_number) for line in lines]
+
+
+def _result_account(company, loss):
+	"""Result account: 129 for a loss, 120 for a profit, else any 12 account."""
+	for prefix in ("129" if loss else "120", "12"):
+		name = frappe.db.get_value(
+			"Account",
+			{"company": company, "is_group": 0, "account_number": ("like", f"{prefix}%")},
+			"name",
+			order_by="account_number asc",
+		)
+		if name:
+			return name
+	frappe.throw(_("No result account (12) found to carry forward the previous year's result."))
+
+
+def _carried_forward_entry(line, year_start, entry_number):
+	balance = flt(line.balance, 2)
+	balance_currency = flt(line.balance_currency, 2)
+	entry = frappe._dict(
+		is_carried_forward=1,
+		GlPostDate=year_start,
+		account=line.account,
+		account_currency=line.account_currency,
+		debit=max(balance, 0),
+		credit=max(-balance, 0),
+		debitCurr=max(balance_currency, 0),
+		creditCurr=max(-balance_currency, 0),
+		accounting_entry_number=entry_number,
+		voucher_no=OPENING_JOURNAL[0],
+		remarks="A nouveau",
+		party_type=line.party_type,
+		party=line.party,
+	)
+	if line.party_type == "Supplier":
+		entry.update(
+			supName=line.party, supplier_name=frappe.db.get_value("Supplier", line.party, "supplier_name")
+		)
+	elif line.party_type == "Customer":
+		entry.update(
+			cusName=line.party, customer_name=frappe.db.get_value("Customer", line.party, "customer_name")
+		)
+	elif line.party_type == "Employee":
+		entry.update(
+			empName=line.party, employee_name=frappe.db.get_value("Employee", line.party, "employee_name")
+		)
+	return entry
