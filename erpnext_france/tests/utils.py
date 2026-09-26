@@ -48,10 +48,9 @@ def before_tests():
 def _enable_all_roles_for_admin():
 	from frappe.desk.page.setup_wizard.setup_wizard import add_all_roles_to
 
-	all_roles = set(frappe.db.get_values("Role", pluck="name"))
-	admin_roles = set(
-		frappe.db.get_values("Has Role", {"parent": "Administrator"}, fieldname="role", pluck="role")
-	)
+	# frappe.db.get_values() without filters returns None on v16
+	all_roles = set(frappe.get_all("Role", pluck="name"))
+	admin_roles = set(frappe.get_all("Has Role", filters={"parent": "Administrator"}, pluck="role"))
 
 	if all_roles.difference(admin_roles):
 		add_all_roles_to("Administrator")
@@ -65,6 +64,9 @@ CHART = "France - Plan Comptable General 2025 avec code"
 
 
 def french_company():
+	if not frappe.db.a_row_exists("Company"):
+		# unittest.TestCase classes do not trigger the before_tests hook
+		before_tests()
 	company = frappe.db.get_value("Company", {"country": "France"}, "name", order_by="creation asc")
 	if not company:
 		company = (
