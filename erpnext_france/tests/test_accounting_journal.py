@@ -115,3 +115,19 @@ class TestAccountingJournalAdjustment(unittest.TestCase):
 		frappe.set_user(user)
 		with self.assertRaises(frappe.PermissionError):
 			self.adjust(pi)
+
+
+class TestFecColumns(unittest.TestCase):
+	@classmethod
+	def setUpClass(cls):
+		cls.company = french_company()
+
+	def test_compte_lib_is_the_account_label(self):
+		"""CompteLib is the account's label, not ERPNext's document name (number and abbr)."""
+		pi = submitted_purchase_invoice(self.company)
+		rows = TestAccountingJournal.fec_rows(self, pi.name)
+		self.assertTrue(rows)
+		accounts = frappe.get_all("GL Entry", filters={"voucher_no": pi.name}, pluck="account")
+		labels = set(frappe.get_all("Account", filters={"name": ("in", accounts)}, pluck="account_name"))
+		for row in rows:
+			self.assertIn(row[5], labels)
