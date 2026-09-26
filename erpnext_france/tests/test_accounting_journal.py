@@ -3,7 +3,7 @@ import unittest
 import frappe
 from frappe.utils import getdate
 
-from erpnext_france.tests.utils import french_company, submitted_purchase_invoice
+from erpnext_france.tests.utils import french_company, other_company, submitted_purchase_invoice
 
 
 class TestAccountingJournal(unittest.TestCase):
@@ -70,3 +70,48 @@ class TestAccountingJournal(unittest.TestCase):
 			(self.purchase_journal().journal_code, pi.name),
 		)
 		self.assert_fec_journal(pi.name)
+
+
+class TestAccountingJournalAdjustment(unittest.TestCase):
+	@classmethod
+	def setUpClass(cls):
+		cls.company = french_company()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.set_value("Company", self.company, "accounts_frozen_till_date", None)
+
+	def adjust(self, pi):
+		from erpnext_france.erpnext_france.doctype.accounting_journal.accounting_journal import (
+			accounting_journal_adjustment,
+		)
+
+		journal = frappe.db.get_value("Accounting Journal", {"company": self.company, "type": "Purchase"})
+		accounting_journal_adjustment("Purchase Invoice", frappe.as_json([pi.name]), journal)
+
+	def test_adjustment_is_refused_in_a_frozen_period(self):
+		pi = submitted_purchase_invoice(self.company)
+		frappe.db.set_value("Company", self.company, "accounts_frozen_till_date", getdate())
+		with self.assertRaises(frappe.ValidationError):
+			self.adjust(pi)
+
+	def test_adjustment_reads_the_freezing_date_of_the_voucher_company(self):
+		"""Another company's frozen period must not block, nor allow, this one."""
+		other = other_company()
+		pi = submitted_purchase_invoice(self.company)
+		frappe.db.set_value("Company", other, "accounts_frozen_till_date", getdate())
+		try:
+			self.adjust(pi)
+		finally:
+			frappe.db.set_value("Company", other, "accounts_frozen_till_date", None)
+
+	def test_adjustment_requires_rights_on_the_voucher(self):
+		pi = submitted_purchase_invoice(self.company)
+		user = "journal-no-rights@example.com"
+		if not frappe.db.exists("User", user):
+			frappe.get_doc(
+				{"doctype": "User", "email": user, "first_name": "No rights", "send_welcome_email": 0}
+			).insert(ignore_permissions=True)
+		frappe.set_user(user)
+		with self.assertRaises(frappe.PermissionError):
+			self.adjust(pi)

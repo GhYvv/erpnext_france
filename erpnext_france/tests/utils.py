@@ -64,7 +64,7 @@ CHART = "France - Plan Comptable General 2025 avec code"
 
 
 def french_company():
-	company = frappe.db.get_value("Company", {"country": "France"}, "name")
+	company = frappe.db.get_value("Company", {"country": "France"}, "name", order_by="creation asc")
 	if not company:
 		company = (
 			frappe.get_doc(
@@ -86,6 +86,24 @@ def french_company():
 		frappe.db.set_value("Company", company, "round_off_account", _leaf(company, "Expense"))
 	frappe.db.commit()
 	return company
+
+
+def other_company(name="ERPNext France Other SAS", abbr="EFO"):
+	"""A second French company, created after the first one."""
+	if not frappe.db.exists("Company", name):
+		frappe.get_doc(
+			{
+				"doctype": "Company",
+				"company_name": name,
+				"abbr": abbr,
+				"country": "France",
+				"default_currency": "EUR",
+				"create_chart_of_accounts_based_on": "Standard Template",
+				"chart_of_accounts": CHART,
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.commit()
+	return name
 
 
 def _leaf(company, root_type):

@@ -97,6 +97,8 @@ def get_entries(doctype, docnames):
 @frappe.whitelist()
 def accounting_journal_adjustment(doctype, docnames, accounting_journal):
 	for docname in frappe.parse_json(docnames):
+		# Reposting entries is a reversal: it takes the right to cancel the voucher.
+		frappe.get_doc(doctype, docname).check_permission("cancel")
 		original_entries = frappe.get_all(
 			"GL Entry",
 			fields=["*"],
@@ -178,7 +180,7 @@ def make_reverse_gl_entries_without_cancelling(
 		return
 
 	validate_accounting_period(gl_entries)
-	check_freezing_date(gl_entries[0]["posting_date"], False)
+	check_freezing_date(gl_entries[0]["posting_date"], gl_entries[0]["company"])
 	set_as_cancel(gl_entries[0]["voucher_type"], gl_entries[0]["voucher_no"])
 
 	accounting_number = get_accounting_number(gl_entries[0])
