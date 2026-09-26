@@ -84,7 +84,9 @@ let fec_export = function (query_report, mark_exported) {
     } else {
       frappe.db.get_value("Fiscal Year", fiscal_year, "year_end_date", (r) => {
         const fy = r.year_end_date;
-        const title = company_data + "FEC" + moment(fy).format("YYYYMMDD");
+        // Art. A47 A-1 LPF: SIREN + "FEC" + closing date (the SIREN is the SIRET's first 9 digits)
+        const siren = String(company_data).replace(/\s/g, "").substring(0, 9);
+        const title = siren + "FEC" + moment(fy).format("YYYYMMDD");
         // Remove unwanted columns in CSV Export
         const column_row = query_report.columns
           .filter((col) => !["ExportDate", "GlName"].includes(col.fieldname))
@@ -141,10 +143,16 @@ let downloadify = function (data, roles, title) {
   document.body.removeChild(a);
 };
 
+// Flat file with tab-separated fields (the norm allows tab or "|"): a field
+// must not contain the separator or a line break.
+let fec_field = function (value) {
+  return String(value ?? "").replace(/[\t\r\n]+/g, " ");
+};
+
 let to_tab_csv = function (data) {
   let res = [];
   $.each(data, function (i, row) {
-    res.push(row.join(";"));
+    res.push(row.map(fec_field).join("\t"));
   });
   return res.join("\n");
 };
